@@ -50,7 +50,111 @@ function Harpoon:new()
     }, self)
     sync_on_change(harpoon)
 
+    Extensions.extensions:add_listener({
+        SELECT = function(data)
+            harpoon:update_mru(data.item)
+        end,
+        LIST_CHANGE = function()
+            local active_list = harpoon.ui.active_list
+            if active_list and active_list.name == "MRU" then
+                local key = harpoon.config.settings.key()
+                local current_file = require("harpoon.utils").normalize_path(
+                    vim.api.nvim_buf_get_name(0),
+                    harpoon.config.default.get_root_dir()
+                )
+
+                local new_mru = {}
+                local old_mru = harpoon.data:data(key, "__mru")
+
+                -- 1. Keep the current file at the top if it was already in MRU
+                for _, val in ipairs(old_mru) do
+                    local item = harpoon.config.default.decode(val)
+                    if item.value == current_file then
+                        table.insert(new_mru, val)
+                        break
+                    end
+                end
+
+                -- 2. Add the remaining items from the modified menu
+                for _, item in pairs(active_list.items) do
+                    if item and item.value then
+                        table.insert(new_mru, harpoon.config.default.encode(item))
+                    end
+                end
+
+                harpoon.data:update(key, "__mru", new_mru)
+                harpoon:sync()
+            end
+        end,
+    })
+
     return harpoon
+end
+
+---@param item HarpoonListItem
+function Harpoon:update_mru(item)
+    if not item or not item.value then
+        return
+    end
+    local key = self.config.settings.key()
+    local mru = self.data:data(key, "__mru")
+    if type(mru) ~= "table" then
+        mru = {}
+    end
+
+    -- Remove if exists
+    for i, val in ipairs(mru) do
+        local decoded = self.config.default.decode(val)
+        if decoded.value == item.value then
+            table.remove(mru, i)
+            break
+        end
+    end
+
+    -- Prepend (encoded)
+    table.insert(mru, 1, self.config.default.encode(item))
+
+    -- Limit size
+    while #mru > 20 do
+        table.remove(mru)
+    end
+
+    self.data:update(key, "__mru", mru)
+    self:sync()
+end
+
+function Harpoon:toggle_mru_menu(opts)
+    local key = self.config.settings.key()
+    local mru_data = self.data:data(key, "__mru")
+    if type(mru_data) ~= "table" or #mru_data == 0 then
+        return
+    end
+
+    local current_file = require("harpoon.utils").normalize_path(
+        vim.api.nvim_buf_get_name(0),
+        self.config.default.get_root_dir()
+    )
+
+    local items = {}
+    for _, val in ipairs(mru_data) do
+        local item = self.config.default.decode(val)
+        if item.value ~= current_file then
+            table.insert(items, item)
+        end
+    end
+
+    if #items == 0 then
+        return
+    end
+
+    local virtual_list = List:new(self.config.default, "MRU", items)
+    self.ui:toggle_quick_menu(virtual_list, opts)
+
+    vim.schedule(function()
+        if self.ui.win_id and vim.api.nvim_win_is_valid(self.ui.win_id) then
+            vim.api.nvim_win_set_cursor(self.ui.win_id, { 1, 0 })
+        end
+    end)
 end
 
 ---@param name string?
